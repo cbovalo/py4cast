@@ -72,14 +72,22 @@ class MLP(nn.Module):
         # self.norm = getattr(nn, norm)
 
         layers = nn.ModuleList()
-        layers.append(nn.Linear(self.in_channel, self.hidden_channels, bias=self.use_bias))
+        layers.append(
+            nn.Linear(self.in_channel, self.hidden_channels, bias=self.use_bias)
+        )
         layers.append(self.activation())
 
         for _ in range(self.num_layers - 1):
-            layers.append(nn.Linear(self.hidden_channels, self.hidden_channels, bias=self.use_bias))
+            layers.append(
+                nn.Linear(
+                    self.hidden_channels, self.hidden_channels, bias=self.use_bias
+                )
+            )
             layers.append(self.activation())
 
-        layers.append(nn.Linear(self.hidden_channels, self.out_channel, bias=self.use_bias))
+        layers.append(
+            nn.Linear(self.hidden_channels, self.out_channel, bias=self.use_bias)
+        )
 
         if self.final_activation:
             layers.append(self.activation())
@@ -110,6 +118,7 @@ class AutoCastLayerNorm(nn.LayerNorm):
     """
     This class comes from ECMWF.
     """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 

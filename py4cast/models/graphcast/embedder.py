@@ -1,4 +1,3 @@
-
 # Copyright 2024 Eviden.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -127,7 +126,10 @@ class GraphCastEncoderEmbedder(nn.Module):
         }
 
         self.grid_node_embedder = Embedder(
-            in_channel=in_grid_node_channel, out_channel=out_channel, use_bias=True, **kwargs
+            in_channel=in_grid_node_channel,
+            out_channel=out_channel,
+            use_bias=True,
+            **kwargs,
         )
 
         self.mesh_node_embedder = Embedder(

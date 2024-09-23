@@ -22,7 +22,11 @@ from torch import Tensor
 import torch.nn as nn
 
 from py4cast.models.graphcast.graph import Graph
-from py4cast.models.graphcast.embedder import GraphCastEncoderEmbedder, GraphCastProcessorEmbedder, GraphCastDecoderEmbedder
+from py4cast.models.graphcast.embedder import (
+    GraphCastEncoderEmbedder,
+    GraphCastProcessorEmbedder,
+    GraphCastDecoderEmbedder,
+)
 from py4cast.models.graphcast.gnn_models import GridNodeModel, InteractionNetwork, MLP
 
 from typing import Tuple
@@ -42,7 +46,7 @@ class GraphCastSettings:
 
     # Graph configuration
     n_subdivisions: int = 6
-    fraction: float = .6
+    fraction: float = 0.6
     mesh2grid_edge_normalization_factor: float = None
 
     # Architecture configuration
@@ -63,6 +67,7 @@ class GraphCast(ModelABC, nn.Module):
     """
     Implemention of GraphCast from the Atos/Eviden code.
     """
+
     settings_kls = GraphCastSettings
     onnx_supported = False  # TODO: confirm it is not onnx supported
     input_dims: str = ("batch", "ngrid", "features")
@@ -78,9 +83,13 @@ class GraphCast(ModelABC, nn.Module):
         # this doesn't take long and it prevents discrepencies
         graph = Graph(statics.meshgrid)
         # Create the graphs
-        graph.create_Grid2Mesh(fraction=settings.fraction, n_workers=10)  # TODO: retrieve n_workers from tl_settings ?
+        graph.create_Grid2Mesh(
+            fraction=settings.fraction, n_workers=10
+        )  # TODO: retrieve n_workers from tl_settings ?
         graph.create_MultiMesh()
-        graph.create_Mesh2Grid(edge_normalization_factor=settings.mesh2grid_edge_normalization_factor)
+        graph.create_Mesh2Grid(
+            edge_normalization_factor=settings.mesh2grid_edge_normalization_factor
+        )
 
     def __init__(
         self,
@@ -100,7 +109,8 @@ class GraphCast(ModelABC, nn.Module):
         # Encoder
         self.encoder = GraphCastEncoder(
             in_grid_node_channel=num_input_features,
-            in_mesh_node_channel=settings.input_mesh_node_channel + settings.input_grid_node_channel,
+            in_mesh_node_channel=settings.input_mesh_node_channel
+            + settings.input_grid_node_channel,
             in_grid2mesh_edge_channel=settings.input_grid2mesh_edge_channel,
             out_channel=settings.output_channel,
             hidden_channels=settings.hidden_channels,
@@ -149,13 +159,13 @@ class GraphCast(ModelABC, nn.Module):
         )
 
     def encoder_forward(
-            self,
-            grid_node_feat: torch.Tensor,
-            static_grid_node_feat: torch.Tensor,
-            mesh_node_feat: torch.Tensor,
-            edge_index: torch.Tensor,
-            # mesh_edge_feat: torch.Tensor,
-            grid2mesh_edge_feat: torch.Tensor,
+        self,
+        grid_node_feat: torch.Tensor,
+        static_grid_node_feat: torch.Tensor,
+        mesh_node_feat: torch.Tensor,
+        edge_index: torch.Tensor,
+        # mesh_edge_feat: torch.Tensor,
+        grid2mesh_edge_feat: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         assert grid_node_feat.shape[0] == static_grid_node_feat.shape[0]
         grid_node_feat = torch.cat([grid_node_feat, static_grid_node_feat], dim=-1)
@@ -166,7 +176,7 @@ class GraphCast(ModelABC, nn.Module):
         dummy_mesh_node_feat = torch.zeros(
             (mesh_node_feat.shape[0],) + grid_node_feat.shape[1:],
             dtype=grid_node_feat.dtype,
-            device=grid_node_feat.device
+            device=grid_node_feat.device,
         )
         mesh_node_feat = torch.cat([dummy_mesh_node_feat, mesh_node_feat], dim=-1)
 
@@ -207,9 +217,7 @@ class GraphCast(ModelABC, nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         # Prepare the inputs
-        grid_node_feat = inputs.squeeze(dim=0).view(
-            self.num_grid_nodes, -1
-        )
+        grid_node_feat = inputs.squeeze(dim=0).view(self.num_grid_nodes, -1)
 
         # Encoder (Embedding and Grid2Mesh GNN)
         (
@@ -224,7 +232,7 @@ class GraphCast(ModelABC, nn.Module):
             self.graph.grid2mesh_graph.edge_index,
             self.graph.grid2mesh_graph.edge_attr,
             use_reentrant=False,
-            debug=False
+            debug=False,
         )
 
         # Processor (Mesh GNN)
@@ -234,7 +242,7 @@ class GraphCast(ModelABC, nn.Module):
             self.graph.mesh_graph.edge_index,
             self.graph.mesh_graph.edge_attr,
             use_reentrant=False,
-            debug=False
+            debug=False,
         )
 
         # Decoder (Mesh2Grid GNN)
@@ -245,7 +253,7 @@ class GraphCast(ModelABC, nn.Module):
             self.graph.mesh2grid_graph.edge_index,
             self.graph.mesh2grid_graph.edge_attr,
             use_reentrant=False,
-            debug=False
+            debug=False,
         )
 
         # Final output (MLP)
@@ -459,7 +467,6 @@ class GraphCastProcessor(nn.Module):
         return mesh_nfeat, mesh_efeat
 
 
-
 class GraphCastDecoder(nn.Module):
     """
     This is the implementation of GraphCast Decoder.
@@ -495,6 +502,7 @@ class GraphCastDecoder(nn.Module):
         aggregation (str):
             Aggregation function, by default sum
     """
+
     def __init__(
         self,
         in_grid_node_channel: int = 512,
@@ -503,10 +511,10 @@ class GraphCastDecoder(nn.Module):
         out_channel: int = 512,
         hidden_channels: int = 512,
         num_layers: int = 1,
-        activation: str = 'SiLU',
+        activation: str = "SiLU",
         use_norm: bool = True,
-        norm: str = 'LayerNorm',
-        aggregation: str = 'sum',
+        norm: str = "LayerNorm",
+        aggregation: str = "sum",
     ):
         super().__init__()
 
@@ -532,7 +540,7 @@ class GraphCastDecoder(nn.Module):
             activation=activation,
             use_norm=use_norm,
             norm=norm,
-            aggregation=aggregation
+            aggregation=aggregation,
         )
 
     def forward(
@@ -548,6 +556,8 @@ class GraphCastDecoder(nn.Module):
         # Then we apply the Interaction Network to the Mesh2Grid graph.
         # Residual connections are done directly within the following models.
         # The final MLP to output the predictions is done outside this module.
-        grid_nfeat, _ = self.mesh2grid_gnn(mesh_nfeat, grid_nfeat, edge_index, mesh2grid_efeat)
+        grid_nfeat, _ = self.mesh2grid_gnn(
+            mesh_nfeat, grid_nfeat, edge_index, mesh2grid_efeat
+        )
 
         return grid_nfeat

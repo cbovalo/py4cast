@@ -439,8 +439,7 @@ def g2m_m2g_project_into_dst_local_coordinates(
 
     try:
         np.allclose(
-            dst_pos_in_rotated_space[:, 0],
-            np.ones_like(dst_pos_in_rotated_space[:, 0])
+            dst_pos_in_rotated_space[:, 0], np.ones_like(dst_pos_in_rotated_space[:, 0])
         )
         np.allclose(
             dst_pos_in_rotated_space[:, 1],
@@ -689,8 +688,7 @@ def multimesh_project_into_dst_local_coordinates(
 
     try:
         np.allclose(
-            dst_pos_in_rotated_space[:, 0],
-            np.ones_like(dst_pos_in_rotated_space[:, 0])
+            dst_pos_in_rotated_space[:, 0], np.ones_like(dst_pos_in_rotated_space[:, 0])
         )
         np.allclose(
             dst_pos_in_rotated_space[:, 1],

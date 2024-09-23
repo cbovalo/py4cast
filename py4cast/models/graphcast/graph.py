@@ -44,7 +44,10 @@ class Graph:
         meshgrid: Tensor,
         n_subdivisions: int = 6,
     ) -> None:
-        self.grid_nodes_lon, self.grid_nodes_lat = meshgrid[0].numpy(), meshgrid[1].numpy()
+        self.grid_nodes_lon, self.grid_nodes_lat = (
+            meshgrid[0].numpy(),
+            meshgrid[1].numpy(),
+        )
         self.grid_latitude = np.unique(self.grid_nodes_lat)
         self.grid_longitude = np.unique(self.grid_nodes_lon)
 
@@ -198,9 +201,13 @@ class Graph:
         # Add node and edge features
         self.grid2mesh_graph.x_s = torch.from_numpy(src_node_features)
         self.grid2mesh_graph.x_r = torch.from_numpy(dst_node_features)
-        self.grid2mesh_graph.edge_attr = torch.from_numpy(edge_features).to(torch.float32)
+        self.grid2mesh_graph.edge_attr = torch.from_numpy(edge_features).to(
+            torch.float32
+        )
 
-    def create_Mesh2Grid(self, edge_normalization_factor: float = None) -> pyg.data.Data:
+    def create_Mesh2Grid(
+        self, edge_normalization_factor: float = None
+    ) -> pyg.data.Data:
         """
         Create the Mesh2Grid graph
 
@@ -242,7 +249,9 @@ class Graph:
         # Add node and edge features
         self.mesh2grid_graph.x_s = None  # torch.from_numpy(src_node_features)
         self.mesh2grid_graph.x_t = None  # torch.from_numpy(dst_node_features)
-        self.mesh2grid_graph.edge_attr = torch.from_numpy(edge_features).to(torch.float32)
+        self.mesh2grid_graph.edge_attr = torch.from_numpy(edge_features).to(
+            torch.float32
+        )
 
     def _finest_mesh(self) -> trimesh.Trimesh:
         return self.icospheres[-1].copy()
@@ -266,8 +275,11 @@ class Graph:
         return pyg.data.Data(
             x=None,
             edge_index=torch.stack(
-                [torch.from_numpy(np.copy(src_index)), torch.from_numpy(np.copy(dst_index))],
-                axis=0
+                [
+                    torch.from_numpy(np.copy(src_index)),
+                    torch.from_numpy(np.copy(dst_index)),
+                ],
+                axis=0,
             ),  # .long(),
             edge_attrs=None,
             y=None,
