@@ -5,6 +5,7 @@ from typing import Any, Tuple, Union
 
 from py4cast.models.base import ModelABC
 
+from .graphcast.models import GraphCast
 from .nlam.models import GraphLAM, HiLAM, HiLAMParallel
 from .vision.conv import HalfUnet, Unet
 from .vision.transformers import Segformer, SwinUNETR
@@ -22,6 +23,7 @@ for kls in (
     Segformer,
     SwinUNETR,
     UNETRPP,
+    GraphCast,
 ):
     registry[kls.__name__.lower()] = kls
 
