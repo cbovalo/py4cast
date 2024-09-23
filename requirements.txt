@@ -37,3 +37,5 @@ typer==0.9.0
 transformers==4.44.2
 tensorflow==2.13.1
 py-spy
+trimesh==4.4.9
+rtree==1.3.0
