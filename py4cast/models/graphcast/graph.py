@@ -44,16 +44,15 @@ class Graph:
         meshgrid: Tensor,
         n_subdivisions: int = 6,
     ) -> None:
+        self.meshgrid = meshgrid
         self.grid_nodes_lon, self.grid_nodes_lat = (
-            meshgrid[0].numpy(),
-            meshgrid[1].numpy(),
+            self.meshgrid[0].numpy(),
+            self.meshgrid[1].numpy(),
         )
         self.grid_latitude = np.unique(self.grid_nodes_lat)
         self.grid_longitude = np.unique(self.grid_nodes_lon)
 
         self.n_subdivisions = n_subdivisions
-
-        self.icospheres = []
 
         self.grid2mesh_graph = None
         self.mesh_graph = None
@@ -62,17 +61,11 @@ class Graph:
         self.grid_nodes_lat = self.grid_nodes_lat.reshape([-1])
         self.grid_nodes_lon = self.grid_nodes_lon.reshape([-1])
 
-        self._create_icospheres()
+        self.meshes = self._create_mesh_refinements()
         self.finest_mesh = self._finest_mesh()
 
-        mesh_phi, mesh_theta = cartesian_to_spherical(
-            self.finest_mesh.vertices[:, 0].astype(np.float32),
-            self.finest_mesh.vertices[:, 1].astype(np.float32),
-            self.finest_mesh.vertices[:, 2].astype(np.float32),
-        )
-        self.mesh_nodes_latitude, self.mesh_nodes_longitude = spherical_to_latlon(
-            mesh_phi, mesh_theta
-        )
+        self.mesh_nodes_latitude = self.finest_mesh.vertices[:, 0]
+        self.mesh_nodes_longitude = self.finest_mesh.vertices[:, 1]
 
         self._node_edge_features_kwargs = {
             "add_node_positions": False,
@@ -83,25 +76,78 @@ class Graph:
             "relative_longitude_local_coordinates": True,
         }
 
-    def _create_icospheres(self) -> None:
-        """
-        Create the multimesh structure.
-        The multimesh is built by refining an icosphere with unit sphere.
-        By default, the poles are vertices of the multimesh. We rotate around the y axis
-        by half the supplementary to the angle between faces divided by 2.
-        <https://en.wikipedia.org/wiki/Regular_icosahedron>
-        """
-        # Get the rotation matrix
-        angle_between_face = np.arccos(-np.sqrt(5.0) / 3.0)
-        rotation_angle = (np.pi - angle_between_face) / 2.0
-        rotation_matrix = trimesh.transformations.euler_matrix(
-            0.0, -rotation_angle, 0.0, "sxyz"
-        )
 
-        for i in range(self.n_subdivisions + 1):
-            icosphere_ = trimesh.creation.icosphere(subdivisions=i, radius=1.0)
-            icosphere_.apply_transform(rotation_matrix)
-            self.icospheres.append(icosphere_)
+    def _create_mesh_refinements(self):
+        """
+        Méthode pour raffiner le maillage à plusieurs niveaux et retourner une liste avec les différents raffinements.
+        """
+        # Trouver les min et max des coordonnées x et y pour définir la taille du rectangle
+        x_min, x_max = np.min(self.grid_longitude), np.max(self.grid_longitude)
+        y_min, y_max = np.min(self.grid_latitude), np.max(self.grid_latitude)
+        self.vertices = np.array([
+            [x_min, y_min],  # Summit A
+            [x_max, y_min],  # Summit B
+            [x_max, y_max],  # Summit C
+            [x_min, y_max],   # Summit D
+            [(x_min + x_max) / 2, (y_min + y_max) / 2],  # Summit O
+        ])
+
+        # Définir les faces du rectangle en le découpant en 4 triangles
+        self.faces = np.array([
+            [0, 4, 1],  # Triangle AOB
+            [0, 4, 3],   # Triangle AOD
+            [2, 4, 1],   # Triangle COB
+            [2, 4, 3],   # Triangle COD
+        ])
+
+        # Créer le mesh initial à partir des sommets et des faces
+        mesh = trimesh.Trimesh(vertices=self.vertices, faces=self.faces)
+
+        # Ajouter le maillage initial (raffinement 0)
+        meshes = [mesh]
+
+        for _ in range(self.n_subdivisions):
+            # Nouvelle liste de sommets et de faces
+            new_faces = []
+            midpoints_cache = {}
+
+            def get_midpoint(v1, v2):
+                # Ordre des sommets peu importe (on utilise un tuple trié)
+                key = tuple(sorted((v1, v2)))
+                if key not in midpoints_cache:
+                    # Calculer le point médian entre deux sommets
+                    midpoint = (mesh.vertices[v1] + mesh.vertices[v2]) / 2
+                    # Ajouter le point médian comme nouveau sommet
+                    mid_index = len(mesh.vertices)
+                    mesh.vertices = np.vstack([mesh.vertices, midpoint])
+                    midpoints_cache[key] = mid_index
+                return midpoints_cache[key]
+
+            # Pour chaque face, la diviser en 4 triangles
+            for face in mesh.faces:
+                v0, v1, v2 = face
+
+                # Calculer les points médians
+                m01 = get_midpoint(v0, v1)
+                m12 = get_midpoint(v1, v2)
+                m20 = get_midpoint(v0, v2)
+
+                # Ajouter les 4 nouveaux triangles
+                new_faces.append([v0, m01, m20])
+                new_faces.append([m01, v1, m12])
+                new_faces.append([m01, m12, m20])
+                new_faces.append([m20, m12, v2])
+
+            # Remplacer les faces par les nouvelles
+            mesh.faces = np.array(new_faces)
+
+            print(mesh)
+
+            # Ajouter le mesh raffiné à la liste
+            meshes.append(mesh)
+
+        return meshes
+
 
     def create_MultiMesh(self, save_mesh: bool = False) -> pyg.data.Data:
         """
@@ -114,12 +160,12 @@ class Graph:
         Returns:
             pyg.data.Data: The Mesh graph in Pytorch Geometric format
         """
-        all_faces = [
-            trimesh.exchange.export.export_dict(icosphere)["faces"]
-            for icosphere in self.icospheres
-        ]
-        all_faces = np.concatenate(all_faces)
-        self.finest_mesh.faces = all_faces
+        # all_faces = [
+        #     trimesh.exchange.export.export_dict(mesh)["faces"]
+        #     for mesh in self.meshes
+        # ]
+        # all_faces = np.concatenate(all_faces)
+        # self.finest_mesh.faces = all_faces
 
         # Get node and edge features
         node_features, edge_features = create_node_edge_features(
@@ -177,9 +223,8 @@ class Graph:
 
         # Get the graph connectivity for Grid2Mesh
         src, dst = get_g2m_connectivity(
-            self.icospheres[-1],
-            self.grid_latitude,
-            self.grid_longitude,
+            self.meshes[-1],
+            self.meshgrid,
             fraction=fraction,  # 0.6000308 to get the same number as in the paper
             n_workers=n_workers,
         )
@@ -191,8 +236,8 @@ class Graph:
             dst=dst,
             src_lat=self.grid_nodes_lat,
             src_lon=self.grid_nodes_lon,
-            dst_lat=self.mesh_nodes_latitude,
-            dst_lon=self.mesh_nodes_longitude,
+            dst_lat=self.mesh_nodes_latitude.astype(np.float32),
+            dst_lon=self.mesh_nodes_longitude.astype(np.float32),
             **self._node_edge_features_kwargs,
         )
 
@@ -228,7 +273,7 @@ class Graph:
 
         # Get the graph connectivity for Mesh2Grid
         src, dst = get_m2g_connectivity(
-            self.icospheres[-1], self.grid_latitude, self.grid_longitude
+            self.finest_mesh, self.grid_latitude, self.grid_longitude
         )
 
         # Get node and edge features
@@ -236,8 +281,8 @@ class Graph:
             graph_type="Mesh2Grid",
             src=src,
             dst=dst,
-            src_lat=self.mesh_nodes_latitude,
-            src_lon=self.mesh_nodes_longitude,
+            src_lat=self.mesh_nodes_latitude.astype(np.float32),
+            src_lon=self.mesh_nodes_longitude.astype(np.float32),
             dst_lat=self.grid_nodes_lat,
             dst_lon=self.grid_nodes_lon,
             edge_normalization_factor=edge_normalization_factor,
@@ -254,7 +299,7 @@ class Graph:
         )
 
     def _finest_mesh(self) -> trimesh.Trimesh:
-        return self.icospheres[-1].copy()
+        return self.meshes[-1].copy()
 
     def _create_pyg_graph(
         self, src_index: np.ndarray, dst_index: np.ndarray

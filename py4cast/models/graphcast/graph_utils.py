@@ -56,8 +56,7 @@ def get_max_edge_length(mesh: trimesh.Trimesh) -> float:
 
 def get_g2m_connectivity(
     mesh: trimesh.Trimesh,
-    lat: np.ndarray,
-    lon: np.ndarray,
+    meshgrid: np.ndarray,
     fraction: float = 0.6,
     n_workers: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -67,10 +66,8 @@ def get_g2m_connectivity(
     Args:
         mesh (trimesh.Trimesh):
             A Trimesh object for the mesh grid.
-        lat (np.ndarray):
-           Latitudes of the nodes for the graph.
-        lon (np.ndarray):
-            Longitudes of the nodes for the graph.
+        meshgrid (np.ndarray):
+           Meshgrid of the nodes for the graph.
         fraction (float, optional):
             Fraction of the longest edge of the finest mesh to use to find neighbors.
             Defaults to 0.6.
@@ -85,11 +82,10 @@ def get_g2m_connectivity(
     max_length = get_max_edge_length(mesh)
     radius_query = max_length * fraction
 
-    spherical_coordinates = grid_lat_lon_to_spherical(lat, lon)
+    xx, yy = meshgrid
+    coordinates = np.stack([xx.flatten(), yy.flatten()], axis=1)
 
-    neighbors = mesh.kdtree.query_ball_point(
-        x=spherical_coordinates, r=radius_query, workers=n_workers
-    )
+    neighbors = mesh.kdtree.query_ball_point(x=coordinates, r=radius_query, workers=n_workers)
 
     grid_edge_index = []
     mesh_edge_index = []
@@ -308,14 +304,14 @@ def get_g2m_m2g_features(
     src_node_phi, src_node_theta = latlon_deg_to_spherical(src_lat, src_lon)
     dst_node_phi, dst_node_theta = latlon_deg_to_spherical(dst_lat, dst_lon)
 
-    # Node features
+    # Node features  TODO
     ###############
     src_node_features = []
     dst_node_features = []
 
     if add_node_positions:
-        src_node_features.extend(spherical_to_cartesian(src_node_phi, src_node_theta))
-        dst_node_features.extend(spherical_to_cartesian(dst_node_phi, dst_node_theta))
+        src_node_features.extend((src_lat, src_lon))
+        dst_node_features.extend((dst_lat, dst_lon))
 
     if add_node_latitude:
         # cos(theta)
