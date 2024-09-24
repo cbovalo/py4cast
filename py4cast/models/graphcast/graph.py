@@ -11,20 +11,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+from pathlib import Path
 import numpy as np
 import torch
 from torch import Tensor
 import torch_geometric as pyg
 import trimesh
+from typing import Tuple
 
 from py4cast.models.graphcast.graph_utils import (
     create_node_edge_features,
     get_g2m_connectivity,
     get_m2g_connectivity,
-    cartesian_to_spherical,
-    spherical_to_latlon,
 )
+
+
+def load_graph(graph_dir: Path) -> Tuple[pyg.data.Data, pyg.data.Data, pyg.data.Data, pyg.data.Data, np.ndarray]:
+    grid2mesh_graph = torch.load(graph_dir / "grid2mesh.pt")
+    mesh2grid_graph = torch.load(graph_dir / "mesh2grid.pt")
+    multimesh_graph = torch.load(graph_dir / "multimesh.pt")
+    grid_size = np.load(graph_dir / "grid_size.npy")
+
+    return grid2mesh_graph, mesh2grid_graph, multimesh_graph, grid_size
 
 
 class Graph:
@@ -43,16 +51,18 @@ class Graph:
         self,
         meshgrid: Tensor,
         n_subdivisions: int = 6,
+        graph_dir: Path = "./",
     ) -> None:
         self.meshgrid = meshgrid
+        self.n_subdivisions = n_subdivisions
+        self.graph_dir = graph_dir
+
         self.grid_nodes_lon, self.grid_nodes_lat = (
             self.meshgrid[0].numpy(),
             self.meshgrid[1].numpy(),
         )
         self.grid_latitude = np.unique(self.grid_nodes_lat)
         self.grid_longitude = np.unique(self.grid_nodes_lon)
-
-        self.n_subdivisions = n_subdivisions
 
         self.grid2mesh_graph = None
         self.mesh_graph = None
@@ -76,6 +86,11 @@ class Graph:
             "relative_longitude_local_coordinates": True,
         }
 
+        grid_size = np.array(np.shape(meshgrid))
+        if not isinstance(self.graph_dir, Path):
+            self.graph_dir = Path(self.graph_dir)
+        self.graph_dir.mkdir(parents=True, exist_ok=True)
+        np.save(self.graph_dir / "grid_size.npy", grid_size)
 
     def _create_mesh_refinements(self):
         """
@@ -141,8 +156,6 @@ class Graph:
             # Remplacer les faces par les nouvelles
             mesh.faces = np.array(new_faces)
 
-            print(mesh)
-
             # Ajouter le mesh raffiné à la liste
             meshes.append(mesh)
 
@@ -160,12 +173,9 @@ class Graph:
         Returns:
             pyg.data.Data: The Mesh graph in Pytorch Geometric format
         """
-        # all_faces = [
-        #     trimesh.exchange.export.export_dict(mesh)["faces"]
-        #     for mesh in self.meshes
-        # ]
-        # all_faces = np.concatenate(all_faces)
-        # self.finest_mesh.faces = all_faces
+        all_faces = [mesh.faces for mesh in self.meshes]
+        all_faces = np.concatenate(all_faces)
+        self.finest_mesh.faces = all_faces
 
         # Get node and edge features
         node_features, edge_features = create_node_edge_features(
@@ -185,14 +195,8 @@ class Graph:
         self.mesh_graph.x = torch.from_numpy(node_features)
         self.mesh_graph.edge_attr = torch.from_numpy(edge_features).to(torch.float32)
 
-        # Export the icospheres if necessary
-        if save_mesh:
-            for i, mesh in self.icospheres:
-                self._export_to_meshio(
-                    mesh, filename=f"./icosphere_split_order_{i}.vtk"
-                )
-
-            self._export_to_meshio(self.finest_mesh, filename="./multimesh.vtk")
+        # Export the mesh
+        torch.save(self.mesh_graph, self.graph_dir / "multimesh.pt")
 
     def create_Grid2Mesh(
         self,
@@ -250,6 +254,9 @@ class Graph:
             torch.float32
         )
 
+        # Export the mesh
+        torch.save(self.mesh_graph, self.graph_dir / "grid2mesh.pt")
+
     def create_Mesh2Grid(
         self, edge_normalization_factor: float = None
     ) -> pyg.data.Data:
@@ -272,9 +279,7 @@ class Graph:
         #     raise ValueError("Expected MultiMesh to be created before Mesh2Grid.")
 
         # Get the graph connectivity for Mesh2Grid
-        src, dst = get_m2g_connectivity(
-            self.finest_mesh, self.grid_latitude, self.grid_longitude
-        )
+        src, dst = get_m2g_connectivity(self.finest_mesh, self.meshgrid)
 
         # Get node and edge features
         src_node_features, dst_node_features, edge_features = create_node_edge_features(
@@ -297,6 +302,9 @@ class Graph:
         self.mesh2grid_graph.edge_attr = torch.from_numpy(edge_features).to(
             torch.float32
         )
+
+        # Export the mesh
+        torch.save(self.mesh_graph, self.graph_dir / "mesh2grid.pt")
 
     def _finest_mesh(self) -> trimesh.Trimesh:
         return self.meshes[-1].copy()

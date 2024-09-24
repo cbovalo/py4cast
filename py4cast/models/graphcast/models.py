@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from torch import Tensor
 import torch.nn as nn
 
-from py4cast.models.graphcast.graph import Graph
+from py4cast.models.graphcast.graph import Graph, load_graph
 from py4cast.models.graphcast.embedder import (
     GraphCastEncoderEmbedder,
     GraphCastProcessorEmbedder,
@@ -42,7 +42,7 @@ class GraphCastSettings:
     Settings for graphcast model
     """
 
-    tmp_dir: Path | str = "/tmp"  # nosec B108
+    tmp_dir: Path | str = Path("tmp/")  # nosec B108
 
     # Graph configuration
     n_subdivisions: int = 6
@@ -81,7 +81,11 @@ class GraphCast(ModelABC, nn.Module):
         on rank zero before instantiating the model.
         """
         # this doesn't take long and it prevents discrepencies
-        graph = Graph(statics.meshgrid)
+        graph = Graph(
+            meshgrid=statics.meshgrid,
+            n_subdivisions=settings.n_subdivisions,
+            graph_dir=settings.tmp_dir,
+        )
         # Create the graphs
         graph.create_Grid2Mesh(
             fraction=settings.fraction, n_workers=10
@@ -102,7 +106,9 @@ class GraphCast(ModelABC, nn.Module):
     ) -> None:
         super().__init__(*args, **kwargs)
 
-        self.grid_size = (len(self.graph.grid_latitude), len(self.graph.grid_longitude))
+        # TODO: load graph
+        self.grid2mesh_graph, self.mesh2grid_graph, self.multimesh_graph, self.grid_size = load_graph(settings.tmp_dir)
+
         self.num_grid_nodes = self.grid_size[0] * self.grid_size[1]
 
         # Instantiate the model
@@ -227,10 +233,10 @@ class GraphCast(ModelABC, nn.Module):
         ) = checkpoint(
             self.encoder_forward,
             grid_node_feat,
-            self.graph.grid2mesh_graph.x_s,
-            self.graph.grid2mesh_graph.x_r,
-            self.graph.grid2mesh_graph.edge_index,
-            self.graph.grid2mesh_graph.edge_attr,
+            self.grid2mesh_graph.x_s,
+            self.grid2mesh_graph.x_r,
+            self.grid2mesh_graph.edge_index,
+            self.grid2mesh_graph.edge_attr,
             use_reentrant=False,
             debug=False,
         )
@@ -239,8 +245,8 @@ class GraphCast(ModelABC, nn.Module):
         mesh_node_feat, mesh_edge_feat = checkpoint(
             self.processor_forward,
             mesh_node_feat,
-            self.graph.mesh_graph.edge_index,
-            self.graph.mesh_graph.edge_attr,
+            self.multimesh_graph.edge_index,
+            self.multimesh_graph.edge_attr,
             use_reentrant=False,
             debug=False,
         )
@@ -250,8 +256,8 @@ class GraphCast(ModelABC, nn.Module):
             self.decoder_forward,
             grid_node_feat,
             mesh_node_feat,
-            self.graph.mesh2grid_graph.edge_index,
-            self.graph.mesh2grid_graph.edge_attr,
+            self.mesh2grid_graph.edge_index,
+            self.mesh2grid_graph.edge_attr,
             use_reentrant=False,
             debug=False,
         )

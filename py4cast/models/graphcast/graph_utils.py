@@ -101,7 +101,7 @@ def get_g2m_connectivity(
 
 
 def get_m2g_connectivity(
-    mesh: trimesh.Trimesh, lat: np.ndarray, lon: np.ndarray
+    mesh: trimesh.Trimesh, meshgrid: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Get the connectivity for the Mesh2Grid graph.
@@ -109,22 +109,31 @@ def get_m2g_connectivity(
     Args:
         mesh (trimesh.Trimesh):
             A Trimesh object.
-        lat (np.ndarray):
-            Latitudes of the nodes.
-        lon (np.ndarray):
-            Longitudes of the nodes.
+        meshgrid (np.ndarray):
+            Meshgrid of the nodes.
 
     Returns:
         Tuple[np.ndarray, np.ndarray]:
             sender (mesh) and receiver (graph) indices.
     """
-    spherical_coordinates = grid_lat_lon_to_spherical(lat, lon)
-    _, _, containing_face = trimesh.proximity.closest_point(mesh, spherical_coordinates)
+    from scipy.spatial import cKDTree
 
-    mesh_edge_index = mesh.faces[containing_face].reshape(-1).astype(int)
-    grid_edge_index = np.repeat(np.arange(spherical_coordinates.shape[0]), 3).astype(
-        int
-    )
+    # Convert the 2D meshgrid to a set of points in 2D
+    xx, yy = meshgrid
+    coordinates = np.stack([xx.flatten(), yy.flatten()], axis=1)
+
+    # Convert the mesh vertices to 2D (ignoring z if it's 0 or 2D)
+    vertices_2d = mesh.vertices[:, :2]
+
+    # Use KDTree for fast proximity lookup in 2D
+    tree = cKDTree(vertices_2d)
+    
+    # Find the closest vertex in the mesh for each point in the grid
+    _, closest_vertex_indices  = tree.query(coordinates)
+
+    # Create edge connections between mesh and grid points
+    mesh_edge_index = closest_vertex_indices.astype(int)
+    grid_edge_index = np.arange(coordinates.shape[0]).astype(int)
 
     return mesh_edge_index, grid_edge_index  # senders, receivers
 
@@ -314,18 +323,12 @@ def get_g2m_m2g_features(
         dst_node_features.extend((dst_lat, dst_lon))
 
     if add_node_latitude:
-        # cos(theta)
-        # [-1., 1.] -> [South Pole, North Pole]
-        src_node_features.append(np.cos(src_node_theta))
-        dst_node_features.append(np.cos(dst_node_theta))
+        src_node_features.append(src_lat)
+        dst_node_features.append(dst_lat)
 
     if add_node_longitude:
-        # cos(phi), sin(phi)
-        src_node_features.append(np.cos(src_node_phi))
-        src_node_features.append(np.sin(src_node_phi))
-
-        dst_node_features.append(np.cos(dst_node_phi))
-        dst_node_features.append(np.sin(dst_node_phi))
+        src_node_features.append(src_lon)
+        dst_node_features.append(dst_lon)
 
     if not src_node_features:
         src_node_features = np.zeros([num_src, 0], dtype=dtype)
@@ -342,10 +345,10 @@ def get_g2m_m2g_features(
         relative_positions = g2m_m2g_project_into_dst_local_coordinates(
             src=src,
             dst=dst,
-            src_phi=src_node_phi,
-            src_theta=src_node_theta,
-            dst_phi=dst_node_phi,
-            dst_theta=dst_node_theta,
+            src_lat=src_lat,
+            src_lon=src_lon,
+            dst_lat=dst_lat,
+            dst_lon=dst_lon,
             relative_latitude_local_coordinates=relative_latitude_local_coordinates,
             relative_longitude_local_coordinates=relative_longitude_local_coordinates,
         )
@@ -374,81 +377,55 @@ def get_g2m_m2g_features(
 def g2m_m2g_project_into_dst_local_coordinates(
     src: np.ndarray,
     dst: np.ndarray,
-    src_phi: np.ndarray,
-    src_theta: np.ndarray,
-    dst_phi: np.ndarray,
-    dst_theta: np.ndarray,
-    relative_latitude_local_coordinates: bool,
-    relative_longitude_local_coordinates: bool,
+    src_lat: np.ndarray,
+    src_lon: np.ndarray,
+    dst_lat: np.ndarray,
+    dst_lon: np.ndarray,
+    relative_latitude_local_coordinates: bool = True,
+    relative_longitude_local_coordinates: bool = True,
 ) -> np.ndarray:
     """
-    Generate a local relative coordinate system defined by the receiver.
+    Generate a local relative coordinate system defined by the receiver, adapted to a 2D lat/lon grid.
     Applied to the bipartite graphs Grid2Mesh and Mesh2Grid.
 
     Args:
-        src (np.ndarray):
-            Indices of the receiver nodes.
-        dst (np.ndarray):
-            Indices of the receiver nodes.
-        src_phi (np.ndarray):
-            Polar angles of the sender nodes.
-        src_theta (np.ndarray):
-            Azimuthal angles for the sender nodes.
-        dst_phi (np.ndarray):
-            Polar angles of the receiver nodes.
-        dst_theta (np.ndarray):
-            Azimuthal angles of the sender nodes.
-        relative_latitude_local_coordinates (bool):
-            If True, relative positions are computed in a coordinate system in which the receiver has latitude 0°.
-            Default to True.
-        relative_longitude_local_coordinates (bool):
-            If True, relative positions are computed in a coordinate system in which the receiver has longitude 0°.
-            Default to True.
+        src (np.ndarray): Indices of the sender nodes.
+        dst (np.ndarray): Indices of the receiver nodes.
+        src_lat (np.ndarray): Latitudes of the sender nodes.
+        src_lon (np.ndarray): Longitudes of the sender nodes.
+        dst_lat (np.ndarray): Latitudes of the receiver nodes.
+        dst_lon (np.ndarray): Longitudes of the receiver nodes.
+        relative_latitude_local_coordinates (bool): 
+            If True, relative positions are computed in a system where the receiver has latitude 0°.
+        relative_longitude_local_coordinates (bool): 
+            If True, relative positions are computed in a system where the receiver has longitude 0°.
 
     Returns:
-        np.ndarray: 3D relative positions in the new coordinates (num_edges, 3).
+        np.ndarray: 2D relative positions in the new coordinates (num_edges, 2).
     """
-    src_xyz = np.stack(spherical_to_cartesian(src_phi, src_theta), axis=-1)
-    dst_xyz = np.stack(spherical_to_cartesian(dst_phi, dst_theta), axis=-1)
 
-    if not (
-        relative_latitude_local_coordinates or relative_longitude_local_coordinates
-    ):
-        return src_xyz[src] - dst_xyz[dst]
+    # Compute differences in latitudes and longitudes
+    delta_lat = src_lat[src] - dst_lat[dst]
+    delta_lon = src_lon[src] - dst_lon[dst]
 
-    # Get the rotation matrices for every receiver nodes
-    rotation_matrices = get_rotation_matrices(
-        reference_phi=dst_phi,
-        reference_theta=dst_theta,
-        rotate_latitude=relative_latitude_local_coordinates,
-        rotate_longitude=relative_longitude_local_coordinates,
-    )
+    if not (relative_latitude_local_coordinates or relative_longitude_local_coordinates):
+        # Return the raw latitude and longitude differences
+        return np.stack([delta_lat, delta_lon], axis=-1)
 
-    edge_rotation_matrices = rotation_matrices[dst]
+    # Rotate the system based on the receiver nodes' coordinates if requested
+    if relative_latitude_local_coordinates:
+        # Shift the latitude reference so that the destination (receiver) is at 0°
+        delta_lat = src_lat[src] - dst_lat[dst]  # already computed; it's lat difference
 
-    dst_pos_in_rotated_space = apply_rotation_with_matrices(
-        edge_rotation_matrices, dst_xyz[dst]
-    )
-    src_pos_in_rotated_space = apply_rotation_with_matrices(
-        edge_rotation_matrices, src_xyz[src]
-    )
+    if relative_longitude_local_coordinates:
+        # Longitude requires handling for crossing the 180° meridian
+        delta_lon = np.mod(delta_lon + 180, 360) - 180  # Ensure longitude difference is between [-180, 180]
 
-    try:
-        np.allclose(
-            dst_pos_in_rotated_space[:, 0], np.ones_like(dst_pos_in_rotated_space[:, 0])
-        )
-        np.allclose(
-            dst_pos_in_rotated_space[:, 1],
-            np.zeros_like(dst_pos_in_rotated_space[:, 1]),
-        )
-        np.allclose(
-            dst_pos_in_rotated_space[:, 2],
-            np.zeros_like(dst_pos_in_rotated_space[:, 2]),
-        )
-    except ValueError:
-        raise ValueError("Error in the projection to local coordinate system.")
+    # Combine the adjusted lat/lon differences
+    relative_positions = np.stack([delta_lat, delta_lon], axis=-1)
 
-    return src_pos_in_rotated_space - dst_pos_in_rotated_space
+    return relative_positions
+
 
 
 def get_rotation_matrices(
