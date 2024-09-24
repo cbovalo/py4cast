@@ -18,18 +18,24 @@ from torch import Tensor
 import torch_geometric as pyg
 import trimesh
 from typing import Tuple
+import matplotlib.pyplot as plt
 
 from py4cast.models.graphcast.graph_utils import (
     create_node_edge_features,
     get_g2m_connectivity,
     get_m2g_connectivity,
 )
+from py4cast.models.nlam.create_mesh import plot_graph
 
 
-def load_graph(graph_dir: Path) -> Tuple[pyg.data.Data, pyg.data.Data, pyg.data.Data, pyg.data.Data, np.ndarray]:
-    grid2mesh_graph = torch.load(graph_dir / "grid2mesh.pt")
-    mesh2grid_graph = torch.load(graph_dir / "mesh2grid.pt")
-    multimesh_graph = torch.load(graph_dir / "multimesh.pt")
+def load_graph(
+    graph_dir: Path,
+) -> Tuple[pyg.data.Data, pyg.data.Data, pyg.data.Data, pyg.data.Data, np.ndarray]:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    grid2mesh_graph = torch.load(graph_dir / "grid2mesh.pt", map_location=device)
+    mesh2grid_graph = torch.load(graph_dir / "mesh2grid.pt", map_location=device)
+    multimesh_graph = torch.load(graph_dir / "multimesh.pt", map_location=device)
     grid_size = np.load(graph_dir / "grid_size.npy")
 
     return grid2mesh_graph, mesh2grid_graph, multimesh_graph, grid_size
@@ -51,7 +57,7 @@ class Graph:
         self,
         meshgrid: Tensor,
         n_subdivisions: int = 6,
-        graph_dir: Path = "./",
+        graph_dir: Path = Path("tmp/"),
     ) -> None:
         self.meshgrid = meshgrid
         self.n_subdivisions = n_subdivisions
@@ -86,7 +92,7 @@ class Graph:
             "relative_longitude_local_coordinates": True,
         }
 
-        grid_size = np.array(np.shape(meshgrid))
+        grid_size = np.array(np.shape(meshgrid)[1:])  # Only save the x and y dim
         if not isinstance(self.graph_dir, Path):
             self.graph_dir = Path(self.graph_dir)
         self.graph_dir.mkdir(parents=True, exist_ok=True)
@@ -99,21 +105,25 @@ class Graph:
         # Trouver les min et max des coordonnées x et y pour définir la taille du rectangle
         x_min, x_max = np.min(self.grid_longitude), np.max(self.grid_longitude)
         y_min, y_max = np.min(self.grid_latitude), np.max(self.grid_latitude)
-        self.vertices = np.array([
-            [x_min, y_min],  # Summit A
-            [x_max, y_min],  # Summit B
-            [x_max, y_max],  # Summit C
-            [x_min, y_max],   # Summit D
-            [(x_min + x_max) / 2, (y_min + y_max) / 2],  # Summit O
-        ])
+        self.vertices = np.array(
+            [
+                [x_min, y_min],  # Summit A
+                [x_max, y_min],  # Summit B
+                [x_max, y_max],  # Summit C
+                [x_min, y_max],  # Summit D
+                [(x_min + x_max) / 2, (y_min + y_max) / 2],  # Summit O
+            ]
+        )
 
         # Définir les faces du rectangle en le découpant en 4 triangles
-        self.faces = np.array([
-            [0, 4, 1],  # Triangle AOB
-            [0, 4, 3],   # Triangle AOD
-            [2, 4, 1],   # Triangle COB
-            [2, 4, 3],   # Triangle COD
-        ])
+        self.faces = np.array(
+            [
+                [0, 4, 1],  # Triangle AOB
+                [0, 4, 3],  # Triangle AOD
+                [2, 4, 1],  # Triangle COB
+                [2, 4, 3],  # Triangle COD
+            ]
+        )
 
         # Créer le mesh initial à partir des sommets et des faces
         mesh = trimesh.Trimesh(vertices=self.vertices, faces=self.faces)
@@ -161,14 +171,13 @@ class Graph:
 
         return meshes
 
-
-    def create_MultiMesh(self, save_mesh: bool = False) -> pyg.data.Data:
+    def create_MultiMesh(self, plot: bool = False) -> pyg.data.Data:
         """
         Creates the MultiMesh graph based on the icospheres.
 
         Args:
-            save_mesh (bool, optional):
-                Whether to save the icosphers or not. Defaults to False.
+            plot (bool, optional):
+                Plot the graph or not. Defaults to False.
 
         Returns:
             pyg.data.Data: The Mesh graph in Pytorch Geometric format
@@ -195,13 +204,18 @@ class Graph:
         self.mesh_graph.x = torch.from_numpy(node_features)
         self.mesh_graph.edge_attr = torch.from_numpy(edge_features).to(torch.float32)
 
-        # Export the mesh
+        # Save the mesh
         torch.save(self.mesh_graph, self.graph_dir / "multimesh.pt")
+
+        if plot:
+            plot_graph(self.mesh_graph, "GraphCast - MultiMesh")
+            plt.show()
 
     def create_Grid2Mesh(
         self,
         fraction: float = 0.6,
         n_workers: int = 1,
+        plot: bool = False,
     ) -> pyg.data.Data:
         """
         Creates the Grid2Mesh graph.
@@ -214,6 +228,8 @@ class Graph:
                 Defaults to 0.6.
             n_workers (int, optional):
                 Number of workers for parallel processing. Defaults to 1.
+            plot (bool, optional):
+                Plot the graph or not. Defaults to False.
 
         Raises:
             ValueError: The finest mesh with all merged edges must exist
@@ -254,11 +270,17 @@ class Graph:
             torch.float32
         )
 
-        # Export the mesh
-        torch.save(self.mesh_graph, self.graph_dir / "grid2mesh.pt")
+        # Save the mesh
+        torch.save(self.grid2mesh_graph, self.graph_dir / "grid2mesh.pt")
+
+        if plot:
+            plot_graph(self.grid2mesh_graph, "GraphCast - Grid2Mesh")
+            plt.show()
 
     def create_Mesh2Grid(
-        self, edge_normalization_factor: float = None
+        self,
+        edge_normalization_factor: float = None,
+        plot: bool = False,
     ) -> pyg.data.Data:
         """
         Create the Mesh2Grid graph
@@ -266,6 +288,8 @@ class Graph:
         Args:
             edge_normalization_factor: Manually control the edge_normalization.
                                        If None, normalize by the longest edge length. Default to None.
+            plot (bool, optional):
+                Plot the graph or not. Defaults to False.
 
         Raises:
             ValueError:
@@ -303,8 +327,12 @@ class Graph:
             torch.float32
         )
 
-        # Export the mesh
-        torch.save(self.mesh_graph, self.graph_dir / "mesh2grid.pt")
+        # Save the mesh
+        torch.save(self.mesh2grid_graph, self.graph_dir / "mesh2grid.pt")
+
+        if plot:
+            plot_graph(self.mesh2grid_graph, "GraphCast - Mesh2Grid")
+            plt.show()
 
     def _finest_mesh(self) -> trimesh.Trimesh:
         return self.meshes[-1].copy()

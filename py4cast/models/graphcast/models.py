@@ -18,8 +18,7 @@ from torch.utils.checkpoint import checkpoint
 from dataclasses_json import dataclass_json
 from dataclasses import dataclass
 
-from torch import Tensor
-import torch.nn as nn
+
 
 from py4cast.models.graphcast.graph import Graph, load_graph
 from py4cast.models.graphcast.embedder import (
@@ -106,8 +105,12 @@ class GraphCast(ModelABC, nn.Module):
     ) -> None:
         super().__init__(*args, **kwargs)
 
-        # TODO: load graph
-        self.grid2mesh_graph, self.mesh2grid_graph, self.multimesh_graph, self.grid_size = load_graph(settings.tmp_dir)
+        (
+            self.grid2mesh_graph,
+            self.mesh2grid_graph,
+            self.multimesh_graph,
+            self.grid_size,
+        ) = load_graph(settings.tmp_dir)
 
         self.num_grid_nodes = self.grid_size[0] * self.grid_size[1]
 
@@ -115,8 +118,7 @@ class GraphCast(ModelABC, nn.Module):
         # Encoder
         self.encoder = GraphCastEncoder(
             in_grid_node_channel=num_input_features,
-            in_mesh_node_channel=settings.input_mesh_node_channel
-            + settings.input_grid_node_channel,
+            in_mesh_node_channel=settings.input_mesh_node_channel + num_input_features,
             in_grid2mesh_edge_channel=settings.input_grid2mesh_edge_channel,
             out_channel=settings.output_channel,
             hidden_channels=settings.hidden_channels,
@@ -173,6 +175,8 @@ class GraphCast(ModelABC, nn.Module):
         # mesh_edge_feat: torch.Tensor,
         grid2mesh_edge_feat: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        print("grid_node_feat", grid_node_feat.device)
+        print("static_grid_node_feat", static_grid_node_feat.device)
         assert grid_node_feat.shape[0] == static_grid_node_feat.shape[0]
         grid_node_feat = torch.cat([grid_node_feat, static_grid_node_feat], dim=-1)
 
@@ -364,11 +368,11 @@ class GraphCastEncoder(nn.Module):
 
     def forward(
         self,
-        grid_nfeat: Tensor,
-        mesh_nfeat: Tensor,
-        edge_index: Tensor,
-        grid2mesh_efeat: Tensor,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        grid_nfeat: torch.Tensor,
+        mesh_nfeat: torch.Tensor,
+        edge_index: torch.Tensor,
+        grid2mesh_efeat: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # First, we embed the different features.
         grid_nfeat, mesh_nfeat, grid2mesh_efeat = self.encoder_embedder(
             grid_nfeat, mesh_nfeat, grid2mesh_efeat
@@ -458,10 +462,10 @@ class GraphCastProcessor(nn.Module):
 
     def forward(
         self,
-        mesh_nfeat: Tensor,
-        edge_index: Tensor,
-        mesh_efeat: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
+        mesh_nfeat: torch.Tensor,
+        edge_index: torch.Tensor,
+        mesh_efeat: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         mesh_efeat = self.processor_embedder(mesh_efeat)
 
         for i in range(len(self.layers)):
@@ -551,11 +555,11 @@ class GraphCastDecoder(nn.Module):
 
     def forward(
         self,
-        grid_nfeat: Tensor,
-        mesh_nfeat: Tensor,
-        edge_index: Tensor,
-        mesh2grid_efeat: Tensor,
-    ) -> Tensor:
+        grid_nfeat: torch.Tensor,
+        mesh_nfeat: torch.Tensor,
+        edge_index: torch.Tensor,
+        mesh2grid_efeat: torch.Tensor,
+    ) -> torch.Tensor:
         # First the edge attributes of Mesh2Grid are encoded into a latent representation.
         mesh2grid_efeat = self.decoder_embedder(mesh2grid_efeat)
 
