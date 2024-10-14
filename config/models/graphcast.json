@@ -1,0 +1,15 @@
+{
+"n_subdivisions": 6,
+"fraction": 0.6,
+"input_mesh_node_channel": 3,
+"input_mesh_edge_channel": 4,
+"input_grid2mesh_edge_channel": 4,
+"output_channel": 512,
+"hidden_channels": 512,
+"num_layers": 1,
+"num_block": 16,
+"activation": "SiLU",
+"use_norm": true,
+"norm": "LayerNorm",
+"aggregation": "sum"
+}
