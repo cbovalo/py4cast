@@ -285,6 +285,7 @@ class DatasetInfo:
     statics: Statics  # A lot of static variables
     stats: Stats
     diff_stats: Stats
+    grid: Grid
     state_weights: Dict[str, float]
     shortnames: Dict[str, List[str]] = None
 
@@ -664,6 +665,7 @@ class DatasetABC(Dataset):
             stats=self.stats,
             diff_stats=self.diff_stats,
             state_weights=self.state_weights,
+            grid=self.grid
         )
 
     @cached_property

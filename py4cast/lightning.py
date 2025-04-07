@@ -199,6 +199,12 @@ class AutoRegressiveLightning(LightningModule):
         # Otherwise their is some problem with transform_statics and parameters_saving
         # when relaoding from checkpoint
         statics = deepcopy(dataset_info.statics)
+        grid = deepcopy(dataset_info.grid)
+        print(grid.lat.shape)
+        print(grid.lon.shape)
+        # print(statics.meshgrid[0][0])
+        # print(statics.meshgrid[1][:, 0])
+
         # Init object of register_dict
         self.diff_stats = dataset_info.diff_stats
         self.stats = dataset_info.stats
@@ -227,6 +233,11 @@ class AutoRegressiveLightning(LightningModule):
             + dataset_info.forcing_dim
         )
 
+        # if model_name == "GraphCast":
+        #     num_input_features = (
+        #         num_input_features + settings_init_args["input_mesh_node_channel"]
+        #     )
+
         num_output_features = dataset_info.weather_dim
 
         model_kls, model_settings = get_model_kls_and_settings(
@@ -243,6 +254,8 @@ class AutoRegressiveLightning(LightningModule):
             num_output_features,
             self.settings_init_args,
             statics.grid_shape,
+            grid.lat,
+            grid.lon,
         )
         if channels_last:
             self.model = self.model.to(memory_format=torch.channels_last)

@@ -5,7 +5,7 @@ and also register any plugin found in the PYTHONPATH.
 
 import importlib
 import pkgutil
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 from mfai.torch.models import registry as mfai_registry
 from mfai.torch.models.base import ModelABC
@@ -30,6 +30,7 @@ discovered_modules = {
 # Inspired from: https://packaging.python.org/en/latest/guides/creating-and-discovering-plugins
 for module_name, module in discovered_modules.items():
     for name, kls in module.__dict__.items():
+        print(f"Name of the model : {name}")
         if (
             isinstance(kls, type)
             and issubclass(kls, ModelABC)
@@ -66,6 +67,8 @@ def build_model_from_settings(
     num_output_features: int,
     settings: dict,
     input_shape: tuple,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
     *args,
     **kwargs,
 ) -> Tuple[ModelABC, Any]:
@@ -79,6 +82,8 @@ def build_model_from_settings(
             num_output_features,
             input_shape,
             model_settings,
+            lat,
+            lon,
             *args,
             **kwargs,
         ),

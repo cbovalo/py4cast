@@ -270,13 +270,26 @@ def grid_static_features(grid: Grid, extra_statics: List[NamedTensor]):
     """
     # -- Static grid node features --
     xy = grid.meshgrid  # (2, N_x, N_y)
-    grid_xy = torch.tensor(xy)
+    grid_lat = torch.tensor(xy[1], dtype=torch.float32)
+    grid_lon = torch.tensor(xy[0], dtype=torch.float32)
+    grid_xy = torch.stack(
+        (
+            np.cos(np.deg2rad(90.0 - grid_lat)),
+            np.cos(np.deg2rad(grid_lon)),
+            np.sin(np.deg2rad(grid_lon)),
+        ),
+        dim=-1,
+    )
+    print(f"Grid xy shape : {grid_xy.shape}")
+    print(grid_lat)
+    # grid_xy = torch.tensor(xy)
     # Need to rearange
-    pos_max = torch.max(torch.max(grid_xy, dim=1).values, dim=1).values
-    pos_min = torch.min(torch.min(grid_xy, dim=1).values, dim=1).values
-    grid_xy = (einops.rearrange(grid_xy, ("n x y -> x y n")) - pos_min) / (
-        pos_max - pos_min
-    )  # Rearange and divide  by maximum coordinate
+    # pos_max = torch.max(torch.max(grid_xy, dim=1).values, dim=1).values
+    # pos_min = torch.min(torch.min(grid_xy, dim=1).values, dim=1).values
+    # grid_xy = (einops.rearrange(grid_xy, ("n x y -> x y n")) - pos_min) / (
+    #     pos_max - pos_min
+    # )  # Rearange and divide  by maximum coordinate
+    # grid_xy = einops.rearrange(grid_xy, ("n x y -> x y n"))  # Rearange
 
     # (Nx, Ny, 1)
     geopotential = torch.tensor(grid.geopotential).unsqueeze(2)  # (N_x, N_y, 1)
@@ -300,7 +313,13 @@ def grid_static_features(grid: Grid, extra_statics: List[NamedTensor]):
             + [x.tensor for x in extra_statics],
             dim=-1,
         ),
-        feature_names=["x", "y", "geopotential", "border_mask"]
+        feature_names=[
+            "cos(lat)",
+            "cos(lon)",
+            "sin(lon)",
+            "geopotential",
+            "border_mask",
+        ]
         + feature_names,  # Noms des champs 2D
         names=["lat", "lon", "features"],
     )

@@ -1,0 +1,25 @@
+model:
+  model_name: GraphCast
+  loss_name: mse # mse or mae
+  num_inter_steps: 1 # Number of intermediary steps (without any data)
+  num_samples_to_plot: 1
+  training_strategy: scaled_ar # diff_ar or scaled_ar
+  channels_last: False # True: B W H C
+  io_conf : null
+  mask_ratio : 0
+  settings_init_args:
+    tmp_dir: "/tmp"  # nosec B108
+    n_subdivisions: 6
+    coarser_mesh: 0
+    fraction: 0.6
+    input_mesh_node_channel: 3
+    input_mesh_edge_channel: 4
+    input_grid2mesh_edge_channel: 4
+    input_mesh2grid_edge_channel: 4
+    output_channel: 128
+    hidden_channel: 128
+    num_layers: 1
+    use_norm: True
+    use_checkpoint: False
+    mesh_aggr: "sum"
+    processor_layers: 6
