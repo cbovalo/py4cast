@@ -26,7 +26,7 @@ from py4cast.datasets import get_datasets
 from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss
-from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar
+from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar, MetricRMSE
 from py4cast.models import build_model_from_settings, get_model_kls_and_settings
 from py4cast.models import registry as model_registry
 from py4cast.plots import (
@@ -36,6 +36,8 @@ from py4cast.plots import (
     StateErrorPlot,
 )
 from py4cast.utils import str_to_dtype
+
+from transformers.optimization import get_cosine_with_min_lr_schedule_with_warmup
 
 PLOT_PERIOD: int = 10
 
@@ -155,6 +157,11 @@ class AutoRegressiveLightning(LightningModule):
         channels_last: bool = False,
         io_conf: Path | None = None,
         mask_ratio: float = 0,
+        lr: float = 1e-4,
+        lr_scheduler_period: int = 1,
+        warmup_steps: int = 1000,
+        betas: Tuple[float, float] = (0.9, 0.999),
+        min_lr: float = 1e-6,
         *args,
         **kwargs,
     ):
@@ -175,6 +182,12 @@ class AutoRegressiveLightning(LightningModule):
         self.channels_last = channels_last
         self.io_conf = io_conf
         self.mask_ratio = mask_ratio
+
+        self.lr = lr
+        self.lr_scheduler_period = lr_scheduler_period
+        self.warmup_steps = warmup_steps
+        self.betas = betas
+        self.min_lr = min_lr
 
         if self.training_strategy == "downscaling_only":
             print(
@@ -281,13 +294,14 @@ class AutoRegressiveLightning(LightningModule):
     #############################################################
 
     def setup(self, stage=None):
-        self.logger.log_hyperparams(self.hparams, metrics={"val_mean_loss": 0.0})
+        # self.logger.log_hyperparams(self.hparams, metrics={"val_mean_loss": 0.0})
         if self.logging_enabled:
             self.save_path = Path(self.trainer.log_dir)
             max_pred_step = self.num_pred_steps_val_test - 1
             self.rmse_psd_plot_metric = MetricPSDVar(pred_step=max_pred_step)
             self.psd_plot_metric = MetricPSDK(self.save_path, pred_step=max_pred_step)
             self.acc_metric = MetricACC(self.dataset_info)
+            self.rmse_metric = MetricRMSE(squared=False)
             self.configure_loggers()
 
     def configure_loggers(self):
@@ -403,7 +417,7 @@ class AutoRegressiveLightning(LightningModule):
 
     def on_fit_start(self):
         self.log_hparams_tb()
-        self.print_summary_model()
+        # self.print_summary_model()
 
     #############################################################
     #                          FORWARD                          #
@@ -674,22 +688,30 @@ class AutoRegressiveLightning(LightningModule):
         # Compute loss: mean over unrolled times and batch
         batch_loss = torch.mean(self.loss(prediction, target))
 
-        self.training_step_losses.append(batch_loss)
+        # self.training_step_losses.append(batch_loss)
 
         # Notify every plotters
         if self.logging_enabled:
             for plotter in self.train_plotters:
                 plotter.update(self, prediction=self.prediction, target=self.target)
+            self.log(
+                "train_mean_loss",
+                batch_loss,
+                on_epoch=True,
+                on_step=True,
+                sync_dist=True,
+                prog_bar=True,
+            )
 
         return batch_loss
 
-    def on_train_epoch_end(self):
-        outputs = self.training_step_losses
-        if self.logging_enabled:
-            avg_loss = torch.stack([x for x in outputs]).mean()
-            tb = self.logger.experiment
-            tb.add_scalar("mean_loss_epoch/train", avg_loss, self.current_epoch)
-            self.training_step_losses.clear()  # free memory
+    # def on_train_epoch_end(self):
+    #     outputs = self.training_step_losses
+    #     if self.logging_enabled:
+    #         avg_loss = torch.stack([x for x in outputs]).mean()
+    #         tb = self.logger.experiment
+    #         tb.add_scalar("mean_loss_epoch/train", avg_loss, self.current_epoch)
+    #         self.training_step_losses.clear()  # free memory
 
     def on_train_end(self):
         if self.mlflow_logger:
@@ -719,11 +741,14 @@ class AutoRegressiveLightning(LightningModule):
         Add some plots when starting validation
         """
         if self.logging_enabled:
-            l1_loss = ScaledLoss("L1Loss", reduction="none")
-            l1_loss.prepare(self, self.interior_mask, self.dataset_info)
-            metrics = {"mae": l1_loss}
+            # metrics = {}
+            # for torch_loss, alias in ("L1Loss", "mae"), ("MSELoss", "rmse"):
+            #     loss = ScaledLoss(torch_loss, reduction="none")
+            #     loss.prepare(self, self.interior_mask, self.dataset_info)
+            #     metrics[alias] = loss
+
             self.valid_plotters = [
-                StateErrorPlot(metrics, prefix="Validation"),
+                # StateErrorPlot(metrics, prefix="Validation"),
                 PredictionTimestepPlot(
                     num_samples_to_plot=1,
                     num_features_to_plot=4,
@@ -742,30 +767,31 @@ class AutoRegressiveLightning(LightningModule):
         """
         Run validation on single batch
         """
-        with torch.no_grad():
-            prediction, target = self.common_step(batch, batch_idx, phase="val_test")
+        # with torch.no_grad():
+        prediction, target = self.common_step(batch, batch_idx, phase="val_test")
 
         time_step_loss = torch.mean(self.loss(prediction, target), dim=0)
-        mean_loss = torch.mean(time_step_loss)
+        self.val_mean_loss = torch.mean(time_step_loss)
 
         if self.logging_enabled:
             # Log loss per timestep
-            loss_dict = {
-                "timestep_losses/val_step_{step}": time_step_loss[step]
-                for step in range(time_step_loss.shape[0])
-            }
-            self.log_dict(loss_dict, on_epoch=True, sync_dist=True)
+            # loss_dict = {
+            #     f"timestep_losses/val_step_{step}": time_step_loss[step]
+            #     for step in range(time_step_loss.shape[0])
+            # }
+            # self.log_dict(loss_dict, on_epoch=True, on_step=True, sync_dist=True)
             self.log(
                 "val_mean_loss",
-                mean_loss,
+                self.val_mean_loss,
                 on_epoch=True,
+                on_step=True,
                 sync_dist=True,
                 prog_bar=True,
             )
 
-        self.validation_step_losses.append(mean_loss)
+        # self.validation_step_losses.append(mean_loss)
 
-        self.val_mean_loss = mean_loss
+        # self.val_mean_loss = mean_loss
 
         if self.logging_enabled:
             # Notify every plotters
@@ -775,6 +801,7 @@ class AutoRegressiveLightning(LightningModule):
             self.psd_plot_metric.update(prediction, target, self.original_shape)
             self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
             self.acc_metric.update(prediction, target)
+            self.rmse_metric.update(prediction, target, self.original_shape)
 
     def on_validation_epoch_end(self):
         """
@@ -787,6 +814,7 @@ class AutoRegressiveLightning(LightningModule):
             dict_metrics.update(self.psd_plot_metric.compute())
             dict_metrics.update(self.rmse_psd_plot_metric.compute())
             dict_metrics.update(self.acc_metric.compute())
+            dict_metrics.update(self.rmse_metric.compute())
             for name, elmnt in dict_metrics.items():
                 if isinstance(elmnt, matplotlib.figure.Figure):
                     # Tensorboard logger
@@ -810,19 +838,19 @@ class AutoRegressiveLightning(LightningModule):
                         sync_dist=True,
                     )
 
-        outputs = self.validation_step_losses
-        if self.logging_enabled:
-            avg_loss = torch.stack([x for x in outputs]).mean()
-            tb = self.logger.experiment
-            tb.add_scalar("mean_loss_epoch/validation", avg_loss, self.current_epoch)
-        # free memory
-        self.validation_step_losses.clear()
+        # outputs = self.validation_step_losses
+        # if self.logging_enabled:
+        #     avg_loss = torch.stack([x for x in outputs]).mean()
+        #     tb = self.logger.experiment
+        #     tb.add_scalar("mean_loss_epoch/validation", avg_loss, self.current_epoch)
+        # # free memory
+        # self.validation_step_losses.clear()
 
         if self.logging_enabled:
             # Notify every plotters
             if self.current_epoch % PLOT_PERIOD == 0:
                 for plotter in self.valid_plotters:
-                    plotter.on_step_end(self, label="Valid")
+                    plotter.on_step_end(self, label="val")
 
     #############################################################
     #                            TEST                           #
@@ -968,3 +996,29 @@ class AutoRegressiveLightning(LightningModule):
         save_named_tensors_to_grib(
             preds, self.infer_ds, self.infer_ds.sample_list[0], save_settings
         )
+
+    def configure_optimizers(self):
+        """
+        Configure the optimizer and learning rate scheduler.
+        """
+        opt = torch.optim.AdamW(
+            self.parameters(),
+            lr=torch.tensor(self.lr),
+            betas=self.betas,
+        )
+        len_loader = len(self.trainer.datamodule.train_dataloader())
+        epochs = self.trainer.max_epochs
+        lr_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+            opt,
+            num_warmup_steps=self.warmup_steps,
+            num_training_steps=len_loader * epochs,
+            min_lr=self.min_lr,
+        )
+        return {
+            "optimizer": opt,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }

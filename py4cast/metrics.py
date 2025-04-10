@@ -10,6 +10,97 @@ from py4cast.datasets.base import DatasetInfo, NamedTensor
 from py4cast.plots import plot_log_psd
 
 
+class MetricRMSE(Metric):
+    """
+    Compute the RMSE between the target and the prediction for each channels/features
+    """
+
+    is_differentiable = True
+    higher_is_better = False
+    full_state_update = False
+
+    # sum_squared_error: torch.Tensor
+    # total_weight: torch.Tensor
+
+    def __init__(self, squared: bool = True, **kwargs):
+        super().__init__(**kwargs)
+        
+        if not isinstance(squared, bool):
+            raise ValueError(
+                f"Excepted argument `squared` to be a boolean but got {squared}"
+            )
+        self.squared = squared
+        # Declaration of state, states are reset when self.reset() is called
+        # Sum RMSE prediction at each epoch
+        self.add_state(
+            "sum_squared_error",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum",
+        )
+
+        # Step counter, needed to compute rmse mean at each epoch.
+        self.add_state("step_count", default=torch.tensor(0.0), dist_reduce_fx="sum")
+    
+    def update(self, preds: NamedTensor, targets: NamedTensor, shape: tuple):
+        """
+        compute the RMSE between target and pred.
+        called at each end of step
+        """
+
+        if self.step_count == 0:
+            self.feature_names = preds.feature_names
+            self.pred_steps = preds.tensor.shape[1]
+
+        spatial_dims = tuple(preds.spatial_dim_idx)
+        # Check if preds and targets have the same shape
+        if preds.tensor.shape != targets.tensor.shape:
+            raise ValueError("preds and targets must have the same shape")
+
+        if shape is not None:
+            unflatten_dims_name = ["Lon", "Lat"]
+            unflattened_size = shape[2:4]
+            dim = 2
+            # reshape tensor from (batch_size, num_pred_steps, grid, nb_channels)
+            # to (batch_size, num_pred_steps, lon, lat, nb_channels)
+            preds.unflatten_(dim, unflattened_size, unflatten_dims_name)
+            targets.unflatten_(dim, unflattened_size, unflatten_dims_name)
+
+        # Compute RMSE
+        squared_error = (preds.tensor - targets.tensor) ** 2
+        sse = torch.mean(squared_error, dim=spatial_dims)
+        sse = torch.sum(sse, dim=0)
+        # Initialize sum_rmse as a tensor of dim (nb_features)
+        if not self.sum_squared_error.ndim:
+            self.sum_squared_error = torch.zeros(
+                self.pred_steps, preds.tensor.shape[-1], device=self.device
+            )
+
+        self.sum_squared_error += sse.to(device=self.device)
+        self.step_count += len(preds.tensor)
+        
+    def compute(self, prefix: str = "val") -> dict:
+        """
+        Compute RMSE mean for each channels/features, return a dict.
+        Should be called at each epoch's end
+        """
+
+        # Compute mean RMSE over an epoch
+        mean_rmse = self.sum_squared_error / self.step_count
+        feature_names = self.feature_names
+
+        # dict {"feature_name" : RMSE mean}
+        metric_log_dict = {
+            f"{prefix}_rmse/{name}_step{j}": mean_rmse[j, i] if self.squared else torch.sqrt(mean_rmse[j, i])
+            for i, name in enumerate(feature_names)
+            for j in range(self.pred_steps)
+        }
+
+        # Reset metric's state
+        self.reset()
+
+        return metric_log_dict
+
+
 class MetricPSDK(Metric):
     """
     Compute the PSD as a function of the wave number for each channels/features
