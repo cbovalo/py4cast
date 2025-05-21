@@ -21,10 +21,13 @@ from mfai.torch.models.utils import (
 )
 from mlflow.models.signature import infer_signature
 from torchinfo import summary
-from transformers.optimization import get_cosine_with_min_lr_schedule_with_warmup
+from transformers.optimization import (
+    get_constant_schedule,
+    get_cosine_with_min_lr_schedule_with_warmup,
+)
 
 from py4cast.datasets import get_datasets
-from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
+from py4cast.datasets.base import ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss
 from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar
@@ -37,6 +40,7 @@ from py4cast.plots import (
     StateErrorPlot,
 )
 from py4cast.utils import str_to_dtype
+from py4cast.callback import FineTuningScheduler
 
 PLOT_PERIOD: int = 10
 
@@ -67,23 +71,39 @@ class PlDataModule(LightningDataModule):
         self.num_workers = num_workers
         self.prefetch_factor = prefetch_factor
         self.pin_memory = pin_memory
+        self.dataset_name = dataset_name
+        self.dataset_conf = dataset_conf
 
-        # Get dataset in initialisation to have access to this attribute before method trainer.fit
-        self.train_ds, self.val_ds, self.test_ds = get_datasets(
-            dataset_name,
-            num_input_steps,
-            num_pred_steps_train,
-            num_pred_steps_val_test,
-            dataset_conf,
+        # We need to load the dataset here to get the dataset_info
+        # and the infer_ds.
+        train_ds, _, test_ds = get_datasets(
+            self.dataset_name,
+            self.num_input_steps,
+            self.num_pred_steps_train,
+            self.num_pred_steps_val_test,
+            self.dataset_conf,
         )
+        self.train_dataset_info = train_ds.dataset_info
+        self.infer_ds = test_ds
 
-    @property
-    def train_dataset_info(self) -> DatasetInfo:
-        return self.train_ds.dataset_info
+    def setup(self, stage: str = None) -> None:
+        if stage == "fit":
+            self.train_ds, self.val_ds, _ = get_datasets(
+                self.dataset_name,
+                self.num_input_steps,
+                self.num_pred_steps_train,
+                self.num_pred_steps_val_test,
+                self.dataset_conf,
+            )
 
-    @property
-    def infer_ds(self):
-        return self.test_ds
+        if stage == "test":
+            _, _, self.test_ds = get_datasets(
+                self.dataset_name,
+                self.num_input_steps,
+                self.num_pred_steps_train,
+                self.num_pred_steps_val_test,
+                self.dataset_conf,
+            )
 
     def train_dataloader(self):
         return self.train_ds.torch_dataloader(
@@ -202,8 +222,8 @@ class AutoRegressiveLightning(LightningModule):
             )
 
         self.save_hyperparameters()  # write hparams.yaml in save folder
-        self.hparams["dataset_info"] = dataset_info
-        self.hparams["infer_ds"] = infer_ds
+        self.hparams["dataset_info"] = self.dataset_info
+        self.hparams["infer_ds"] = self.infer_ds
 
         # Load static features for grid/data
         # We do not want to change dataset statics inplace
@@ -428,12 +448,30 @@ class AutoRegressiveLightning(LightningModule):
         )
 
         # Scheduler
-        scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+        cos_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
             optimizer,
             num_warmup_steps=self.hparams.num_warmup_steps,
             num_training_steps=self.trainer.estimated_stepping_batches,
             min_lr=self.hparams.min_learning_rate,
         )
+
+        ft_scheduler = next(
+            (
+                cb
+                for cb in self.trainer.callbacks
+                if isinstance(cb, FineTuningScheduler)
+            ),
+            None,
+        )
+        if ft_scheduler is not None:
+            uniform_scheduler = get_constant_schedule(optimizer)
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer,
+                schedulers=[cos_scheduler, uniform_scheduler],
+                milestones=[ft_scheduler.pretraining_steps + 1],
+            )
+        else:
+            scheduler = cos_scheduler
 
         return {
             "optimizer": optimizer,
