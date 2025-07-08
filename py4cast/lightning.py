@@ -12,7 +12,7 @@ import mlflow.pytorch
 import torch
 from lightning import LightningDataModule, LightningModule
 from lightning.pytorch.loggers import MLFlowLogger
-from lightning.pytorch.utilities import rank_zero_only
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from mfai.torch.models.base import ModelType
 from mfai.torch.models.utils import (
     expand_to_batch,
@@ -27,7 +27,13 @@ from transformers.optimization import (
 )
 
 from py4cast.datasets import get_datasets
-from py4cast.datasets.base import ItemBatch, NamedTensor, Statics
+from py4cast.datasets.base import (
+    DatasetABC,
+    ItemBatch,
+    NamedTensor,
+    Statics,
+    collate_fn,
+)
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss
 from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar
@@ -42,7 +48,7 @@ from py4cast.plots import (
 from py4cast.utils import str_to_dtype
 from py4cast.callback import FineTuningScheduler
 
-PLOT_PERIOD: int = 10
+PLOT_PERIOD: int = 250
 
 
 @dataclass
@@ -86,6 +92,10 @@ class PlDataModule(LightningDataModule):
         self.train_dataset_info = train_ds.dataset_info
         self.infer_ds = test_ds
 
+        self.train_ds: DatasetABC = None
+        self.val_ds: DatasetABC = None
+        self.test_ds: DatasetABC = None
+
     def setup(self, stage: str = None) -> None:
         if stage == "fit":
             self.train_ds, self.val_ds, _ = get_datasets(
@@ -113,6 +123,15 @@ class PlDataModule(LightningDataModule):
             prefetch_factor=self.prefetch_factor,
             pin_memory=self.pin_memory,
         )
+        # return torch.utils.data.DataLoader(
+        #     self.train_ds,
+        #     batch_size=self.batch_size,
+        #     num_workers=self.num_workers,
+        #     shuffle=True,
+        #     prefetch_factor=self.prefetch_factor,
+        #     collate_fn=collate_fn,
+        #     pin_memory=self.pin_memory,
+        # )
 
     def val_dataloader(self):
         return self.val_ds.torch_dataloader(
@@ -122,6 +141,15 @@ class PlDataModule(LightningDataModule):
             prefetch_factor=self.prefetch_factor,
             pin_memory=self.pin_memory,
         )
+        # return torch.utils.data.DataLoader(
+        #     self.val_ds,
+        #     batch_size=self.batch_size,
+        #     num_workers=self.num_workers,
+        #     shuffle=False,
+        #     prefetch_factor=self.prefetch_factor,
+        #     collate_fn=collate_fn,
+        #     pin_memory=self.pin_memory,
+        # )
 
     def test_dataloader(self):
         return self.test_ds.torch_dataloader(
@@ -563,6 +591,7 @@ class AutoRegressiveLightning(LightningModule):
 
         # Here we do the autoregressive prediction looping
         # for the desired number of ar steps.
+
         for i in range(batch.num_pred_steps):
             if not (phase == "inference"):
                 border_state = batch.outputs.select_tensor_dim("timestep", i)
@@ -829,20 +858,20 @@ class AutoRegressiveLightning(LightningModule):
         time_step_loss = torch.mean(self.loss(prediction, target), dim=0)
         mean_loss = torch.mean(time_step_loss)
 
-        if self.logging_enabled:
-            # Log loss per timestep
-            loss_dict = {
-                f"timestep_losses/val_step_{step}": time_step_loss[step]
-                for step in range(time_step_loss.shape[0])
-            }
-            self.log_dict(loss_dict, on_epoch=True, sync_dist=True)
-            self.log(
-                "val_mean_loss",
-                mean_loss,
-                on_epoch=True,
-                sync_dist=True,
-                prog_bar=True,
-            )
+        # if self.logging_enabled:
+        # Log loss per timestep
+        loss_dict = {
+            f"timestep_losses/val_step_{step}": time_step_loss[step]
+            for step in range(time_step_loss.shape[0])
+        }
+        self.log_dict(loss_dict, on_epoch=True, sync_dist=True)
+        self.log(
+            "val_mean_loss",
+            mean_loss,
+            on_epoch=True,
+            sync_dist=True,
+            prog_bar=True,
+        )
 
         self.validation_step_losses.append(mean_loss)
 

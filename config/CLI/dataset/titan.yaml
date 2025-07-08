@@ -1,15 +1,15 @@
 data:
   #args forwarded (linked) to model
-  dataset_name: titan_aro_arp
+  dataset_name: titan_full
   num_input_steps: 1
   num_pred_steps_train: 1
   num_pred_steps_val_test: 1
   batch_size: 2
 
   #other args
-  num_workers: 10
-  prefetch_factor: null
-  pin_memory: False
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: True
   dataset_conf:
     periods:
       train:
@@ -63,15 +63,15 @@ data:
       aro_z:
         levels: [250, 500, 700, 850]
         kind: input_output
-      arp_t:
-        levels: [250, 500, 700, 850]
-        kind: input
-      arp_u:
-        levels: [250, 500, 700, 850]
-        kind: input
-      arp_v:
-        levels: [250, 500, 700, 850]
-        kind: input
-      arp_z:
-        levels: [250, 500, 700, 850]
-        kind: input
+      # arp_t:
+      #   levels: [250, 500, 700, 850]
+      #   kind: input
+      # arp_u:
+      #   levels: [250, 500, 700, 850]
+      #   kind: input
+      # arp_v:
+      #   levels: [250, 500, 700, 850]
+      #   kind: input
+      # arp_z:
+      #   levels: [250, 500, 700, 850]
+      #   kind: input

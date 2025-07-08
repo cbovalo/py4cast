@@ -1,5 +1,6 @@
+import os
+
 from typing import Any, Literal, Optional, Union
-from typing_extensions import override
 
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks.callback import Callback
@@ -77,7 +78,6 @@ class FineTuningScheduler(Callback):
         self.init_autoregressive_steps = init_autoregressive_steps
 
         self.current_autoregressive_steps = self.init_autoregressive_steps
-        self.steps_completed_in_phase = 0
 
         self.original_limit_train_batches: Optional[Union[int, float]] = None
         self.original_limit_val_batches: Optional[Union[int, float]] = None
@@ -87,6 +87,27 @@ class FineTuningScheduler(Callback):
         self.finetuning_steps_calculated: Optional[int] = (
             None  # For validate_total_steps
         )
+        self.incomplete_epoch = (
+            None  # For tracking incomplete epochs during pretraining
+        )
+        self.remaining_steps = None
+
+    def on_fit_start(
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+    ) -> None:
+        """
+        Initialize the callback at the start of training.
+        """
+        rank_zero_info(
+            f"Estimated stepping batches: {trainer.estimated_stepping_batches}"
+        )
+        # if trainer.estimated_stepping_batches > self.pretraining_steps:
+        #     rank_zero_warn(
+        #         f"FineTuningScheduler: Trainer's estimated stepping batches ({trainer.estimated_stepping_batches}) "
+        #         f"is greater than pretraining_steps ({self.pretraining_steps}). "
+        #         "This may lead to unexpected behavior if pretraining is not configured correctly."
+        #     )
+        #     trainer.limit_train_batches = self.pretraining_steps
 
     # @override
     def on_train_start(
@@ -118,6 +139,12 @@ class FineTuningScheduler(Callback):
             )
 
         rank_zero_info("FineTuningScheduler: Initializing...")
+
+        self.incomplete_epoch = self.pretraining_steps // trainer.fit_loop.max_batches
+        self.remaining_steps = self.pretraining_steps % trainer.fit_loop.max_batches
+        rank_zero_info(
+            f"FineTuningScheduler: Incomplete epoch: {self.incomplete_epoch}, Remaining steps: {self.remaining_steps}"
+        )
 
         # Store the original limit_train_batches
         self.original_limit_train_batches = trainer.limit_train_batches
@@ -156,60 +183,54 @@ class FineTuningScheduler(Callback):
         ) and trainer.estimated_stepping_batches != float("inf"):
             self.validate_total_steps(trainer.estimated_stepping_batches)
 
-        # Reset phase step counter
-        self.steps_completed_in_phase = 0
-        self._log_current_steps(trainer, pl_module)
+        # self._log_current_steps(trainer)
         rank_zero_info(
             f"FineTuningScheduler: Initialized. current_autoregressive_steps={self.current_autoregressive_steps}, "
             f"pretraining_steps={self.pretraining_steps}, update_frequency={self.update_frequency}."
         )
 
-    # @override
-    def on_train_epoch_start(
-        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
-    ) -> None:
-        if self._reset_train_batch_limit_on_epoch_start:
-            trainer.limit_train_batches = self.original_limit_train_batches
-            rank_zero_info(
-                f"FineTuningScheduler: Reset limit_train_batches to {trainer.limit_train_batches} at train epoch {trainer.current_epoch} start."
-            )
-            self._reset_train_batch_limit_on_epoch_start = False
+    # def on_train_epoch_start(
+    #     self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+    # ) -> None:
+    #     """
+    #     Reset the train batch limit at the start of each epoch if needed.
+    #     This is useful if the limit was modified during the epoch.
+    #     """
+    #     if trainer.current_epoch == self.incomplete_epoch:
+    #         # If we are in the last epoch of pretraining, we might have remaining steps
+    #         if self.remaining_steps is not None and self.remaining_steps > 0:
+    #             trainer.limit_train_batches = self.remaining_steps
+    #             rank_zero_info(
+    #                 f"FineTuningScheduler: Setting limit_train_batches to {self.remaining_steps} for the last incomplete epoch."
+    #             )
 
-        ds_train_steps = trainer.datamodule.num_pred_steps_train
-        model_train_steps = pl_module.num_pred_steps_train
-        if ds_train_steps != model_train_steps:
-            rank_zero_warn(
-                f"FineTuningScheduler: Mismatch at train epoch start! "
-                f"Dataset num_pred_steps: {ds_train_steps}, Model num_pred_steps_train: {model_train_steps}. "
-                f"Model will use {model_train_steps}, Dataloader will use {ds_train_steps}."
-            )
-        rank_zero_info(
-            f"FineTuningScheduler: Train Epoch {trainer.current_epoch}, "
-            f"Effective Dataset num_pred_steps: {ds_train_steps}"
-        )
-        self._log_current_steps(trainer, pl_module)
+        # if trainer.global_step >= self.pretraining_steps:
+        #     rank_zero_info("Reloading manually the dataloaders")
+        #     # trainer.reload_dataloaders_every_n_epochs = 1
+        # trainer.datamodule.setup(stage='fit')
 
-    def on_validation_epoch_start(
-        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
-    ) -> None:
-        if self._reset_val_batch_limit_on_epoch_start:
-            trainer.limit_val_batches = self.original_limit_val_batches
-            rank_zero_info(
-                f"FineTuningScheduler: Reset limit_val_batches to {trainer.limit_val_batches} at val epoch {trainer.current_epoch} start."
-            )
-            self._reset_val_batch_limit_on_epoch_start = False
+        # rank_zero_info(f"Current epoch: {trainer.current_epoch}")
+        # rank_zero_info(f"Last train dl reload epoch: {trainer.fit_loop._last_train_dl_reload_epoch}")
+        # rank_zero_info(f"Reload dataloaders every n epochs: {trainer.reload_dataloaders_every_n_epochs}")
+        # rank_zero_info(trainer.current_epoch - trainer.fit_loop._last_train_dl_reload_epoch >= trainer.reload_dataloaders_every_n_epochs)
+        # if trainer.global_step >= self.pretraining_steps:
+        # trainer.datamodule.setup(stage='fit')
+        # trainer.fit_loop.setup_data()
 
-        if hasattr(trainer.datamodule, "num_pred_steps_val_test"):
-            target_val_steps = (
-                self.current_autoregressive_steps
-            )  # Align with training's current target
-            if trainer.datamodule.num_pred_steps_val_test != target_val_steps:
-                # old_val_dssteps = trainer.datamodule.num_pred_steps_val_test
-                trainer.datamodule.num_pred_steps_val_test = target_val_steps
+    # def on_train_batch_start(
+    #     self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", *args: Any, **kwargs: Any) -> None:
+    #     ds_train_steps = trainer.datamodule.num_pred_steps_train
+    #     model_train_steps = pl_module.num_pred_steps_train
+    #     if ds_train_steps != model_train_steps:
+    #         rank_zero_warn(
+    #             f"FineTuningScheduler: Mismatch at train epoch start! "
+    #             f"Dataset num_pred_steps: {ds_train_steps}, Model num_pred_steps_train: {model_train_steps}. "
+    #             f"Model will use {model_train_steps}, Dataloader will use {ds_train_steps}."
+    #         )
 
-        self._log_current_steps(trainer, pl_module)
+    #     self._log_current_steps(trainer)
 
-    def on_train_epoch_end(
+    def on_train_batch_end(
         self,
         trainer: "pl.Trainer",
         pl_module: "pl.LightningModule",
@@ -221,14 +242,14 @@ class FineTuningScheduler(Callback):
         # Pretraining Phase
         if trainer.global_step < self.pretraining_steps:
             # This ensures that during pretraining, steps are strictly init_autoregressive_steps
-            self._update_train_settings(
-                trainer,
-                pl_module,
-                self.init_autoregressive_steps,
-                is_pretraining_phase=True,
-            )
+            # self._update_train_settings(
+            #     trainer,
+            #     pl_module,
+            #     self.init_autoregressive_steps,
+            #     is_pretraining_phase=True,
+            # )
 
-            self._log_current_steps(trainer, pl_module)
+            self._log_current_steps(trainer)
             return
 
         # Finetuning Phase (trainer.global_step > self.pretraining_steps)
@@ -237,10 +258,24 @@ class FineTuningScheduler(Callback):
                 rank_zero_info(
                     f"FineTuningScheduler: Pretraining phase ended at global_step {trainer.global_step}."
                 )
-                # trainer.relo ad_dataloaders_every_n_epochs = 1
+                # Always saving a checkpoint at the end of the pretraining phase
+                rank_zero_info(
+                    f"FineTuningScheduler: Saving checkpoint at {os.path.join(trainer.logger.log_dir, 'checkpoints', 'pretraining.ckpt')}."
+                )
+                ckpt_path = os.path.join(
+                    trainer.logger.log_dir, "checkpoints", "pretraining.ckpt"
+                )
+                trainer.save_checkpoint(ckpt_path)
+                trainer.fit_loop.epoch_loop.batch_progress.is_last_batch = True
+                trainer.max_batches = self.pretraining_steps
+                trainer.val_check_batch = self.pretraining_steps
+
+                # trainer.limit_train_batches = self.batches_per_step_increase
+                trainer.reload_dataloaders_every_n_epochs = 1
+                # trainer.fit_loop.setup_data()
 
             if self.steps_increment == 0:  # No further increments planned
-                self._log_current_steps(trainer, pl_module)
+                self._log_current_steps(trainer)
                 return
 
             finetuning_steps_so_far = trainer.global_step - self.pretraining_steps
@@ -256,16 +291,57 @@ class FineTuningScheduler(Callback):
 
                     if new_steps > self.current_autoregressive_steps:
                         self._update_train_settings(trainer, pl_module, new_steps)
-                        trainer.datamodule.setup("fit")
+                        # trainer.fit_loop.setup_data()
+                        # trainer.datamodule.setup("fit")
 
-        self._log_current_steps(trainer, pl_module)
+        self._log_current_steps(trainer)
+
+    def on_validation_epoch_end(
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+    ) -> None:
+        trainer.datamodule.num_pred_steps_val_test = self.current_autoregressive_steps
+        if hasattr(trainer.datamodule.val_ds.settings, "num_pred_steps"):
+            target_val_steps = (
+                self.current_autoregressive_steps
+            )  # Align with training's current target
+            if trainer.datamodule.val_ds.settings.num_pred_steps != target_val_steps:
+                trainer.datamodule.val_ds.settings.num_pred_steps = target_val_steps
+
+        self._log_current_steps(trainer)
+
+    def on_train_epoch_end(
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+    ) -> None:
+        # trainer.reload_dataloaders_every_n_epochs = 1
+        trainer.limit_train_batches = self.batches_per_step_increase
+        target_steps = self.current_autoregressive_steps
+        # trainer.datamodule.num_pred_steps_train = target_steps
+        if hasattr(trainer.datamodule.train_ds.settings, "num_pred_steps"):
+            if trainer.datamodule.train_ds.settings.num_pred_steps != target_steps:
+                trainer.datamodule.train_ds.settings.num_pred_steps = target_steps
+
+        if trainer.global_step >= self.pretraining_steps:
+            trainer.datamodule.setup(stage="fit")
+
+        self._log_current_steps(trainer)
+
+        if (trainer.current_epoch + 1) == self.incomplete_epoch:
+            rank_zero_info(
+                f"FineTuningScheduler: Current epoch is {trainer.current_epoch}.",
+                f" Setting limit_train_batches to {self.remaining_steps} for the last incomplete epoch {trainer.current_epoch + 1}."
+            )
+            # If we are in the last epoch of pretraining, we might have remaining steps
+            if self.remaining_steps is not None and self.remaining_steps > 0:
+                trainer.limit_train_batches = self.remaining_steps
+                rank_zero_info(
+                    f"FineTuningScheduler: Setting limit_train_batches to {self.remaining_steps} for the last incomplete epoch."
+                )
 
     def _update_train_settings(
         self,
         trainer: "pl.Trainer",
         pl_module: "pl.LightningModule",
         new_steps: int,
-        is_pretraining_phase: bool = False,
     ) -> None:
         old_steps_in_callback = self.current_autoregressive_steps
         old_steps_in_model = pl_module.num_pred_steps_train
@@ -279,37 +355,32 @@ class FineTuningScheduler(Callback):
             return  # Already consistent
 
         self.current_autoregressive_steps = new_steps
-        pl_module.num_pred_steps_train = new_steps
+        # pl_module.num_pred_steps_train = new_steps
         trainer.datamodule.num_pred_steps_train = new_steps
         trainer.datamodule.num_pred_steps_val_test = new_steps
-        # trainer._data_connector._request_dataloader_reload = True
 
         rank_zero_info(
             f"FineTuningScheduler: Training autoregressive steps updated. "
             f"Callback: {old_steps_in_callback} -> {self.current_autoregressive_steps}. "
-            f"Model: {old_steps_in_model} -> {pl_module.num_pred_steps_train}. "
-            f"Dataset Target: {trainer.datamodule.num_pred_steps_train}. "
             f"Global step: {trainer.global_step}."
         )
 
-        if (
-            not is_pretraining_phase
-            and self.batches_per_step_increase is not None
-            and new_steps > old_steps_in_model
-        ):
-            if (
-                trainer.limit_train_batches != self.batches_per_step_increase
-            ):  # Avoid redundant sets
-                trainer.limit_train_batches = self.batches_per_step_increase
-                self._reset_train_batch_limit_on_epoch_start = True
-                rank_zero_info(
-                    f"FineTuningScheduler: Set limit_train_batches to {self.batches_per_step_increase}. "
-                    f"Will reset at next train epoch start."
-                )
+        # if (
+        #     not is_pretraining_phase
+        #     and self.batches_per_step_increase is not None
+        #     and new_steps > old_steps_in_model
+        # ):
+        #     if (
+        #         trainer.limit_train_batches != self.batches_per_step_increase
+        #     ):  # Avoid redundant sets
+        #         trainer.limit_train_batches = self.batches_per_step_increase
+        #         # self._reset_train_batch_limit_on_epoch_start = True
+        #         rank_zero_info(
+        #             f"FineTuningScheduler: Set limit_train_batches to {self.batches_per_step_increase}. "
+        #             f"Will reset at next train epoch start."
+        #         )
 
-    def _log_current_steps(
-        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
-    ) -> None:
+    def _log_current_steps(self, trainer: "pl.Trainer") -> None:
         if self.logging_interval == "None" or not trainer.loggers:
             return
 

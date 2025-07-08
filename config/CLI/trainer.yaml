@@ -6,8 +6,9 @@ ckpt_path: #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters fr
 trainer:               # Native training arguments of ligthining.pytorch.Trainer
 
   fast_dev_run: False  # True: fit with only 1 batch and 1 epoch, use for dev (logging & checkpointing disabled)
-  num_nodes: 1         # Num of GPU nodes (1 if device=cpu)
-  max_epochs: 500
+  num_nodes: 2         # Num of GPU nodes (1 if device=cpu)
+  max_steps: 11500
+  # max_epochs: 1
   profiler: null       # Performance profiler. Possibilities are [null, simple, or specific custom class (see doc)]
 
   logger:
@@ -15,8 +16,8 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
     - class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
         # default_hp_metric: False # see if tensoboard still works before rm TODO
-        save_dir: "lightning_logs"        # Root directory
-        name:                             # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
+        save_dir: /scratch/bovaloc/meteo_france/py4cast        # Root directory
+        name: AR-FT                            # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
         version:                          # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
     # (checkpoints, config.yaml, images, scores, tensorboard logs, ...)
@@ -34,6 +35,9 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
     #     log_model: True
     #     save_dir: /scratch/shared/py4cast/logs/test_cli/mlflow/
 
+  # plugins: # Lightning plugins to use
+  #   class_path: lightning.pytorch.plugins.environments.MPIEnvironment
+
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
@@ -42,23 +46,39 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
         mode: min
         save_top_k: 1    # Save only the best model
         save_last: True  # Also save the last model
+        every_n_epochs: 1  # Save checkpoint every n epochs
 
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
 
-    - class_path: lightning.pytorch.callbacks.EarlyStopping
+    - class_path: py4cast.callback.FineTuningScheduler
       init_args:
-        monitor: val_mean_loss
-        mode: min
-        patience: 50
+        logging_interval: step
+        max_autoregressive_steps: 6
+        steps_increment: 1
+        update_frequency: 300
+        pretraining_steps: 10000
+        batches_per_step_increase: 300
+        init_autoregressive_steps: 1
+  
+  # profiler:
+  #         class_path: lightning.pytorch.profilers.pytorch.PyTorchProfiler
+  #         init_args:
+  #           filename: 'profiler_output'
+  #         dict_kwargs:
+  #           profile_memory: True
+  #           record_shapes: True
+  #           with_flops: True
+  #           with_modules: False
 
+  enable_progress_bar: True  # Show progress bar during training
   num_sanity_val_steps: 0
-  log_every_n_steps: 50        # Num of batches btw logging
-  accumulate_grad_batches: 10  # Num of batches before optim step
+  log_every_n_steps: 100        # Num of batches btw logging
+  accumulate_grad_batches: 1  # Num of batches before optim step
   deterministic: False         # True for reproducibility but increases computation time
   check_val_every_n_epoch: 1   # Number of epochs training between each validation run
-  precision: 32                # Numerical precision to use for model (32/16/bf16/64)
+  precision: "bf16-true"                # Numerical precision to use for model (32/16/bf16/64)
   strategy: auto               # Training strategy alias (auto, ddp, fsdp, etc)
   accelerator: auto            # Type of device (auto, gpu, cpu)
   devices: auto                # Number of devices (auto or NUM)
